@@ -459,7 +459,7 @@ resource "aws_route53_zone" "hosted_zone" {
 
 # Create a certificate request
 
-resource "aws_acm_certificate" "certificate_request" {
+resource "aws_acm_certificate" "cert_request" {
   domain_name               = var.domain_name
   subject_alternative_names = ["*.${var.domain_name}"]
   validation_method         = "DNS"
@@ -474,18 +474,29 @@ resource "aws_acm_certificate" "certificate_request" {
 }
 
 # Create an record for the acm certificate request validation
-resource "aws_route53_record" "cert_validation" {
-    name    = aws_acm_certificate.certificate_request.domain_validation_options[0].resource_record_name
-    type    = aws_acm_certificate.certificate_request.domain_validation_options[0].resource_record_type
-    zone_id = aws_route53_zone.selected.id
-    records = [aws_acm_certificate.certificate_request.domain_validation_options[0].resource_record_value]
-    ttl     = "60"
+
+resource "aws_route53_record" "cert_record" {
+  for_each = {
+    for dvo in aws_acm_certificate.example.domain_validation_options : dvo.domain_name => {
+      name    = dvo.resource_record_name
+      record  = dvo.resource_record_value
+      type    = dvo.resource_record_type
+      zone_id = dvo.domain_name == "${var.domain_name}" ? data.aws_route53_zone.hosted_zone.zone_id : data.aws_route53_zone.hosted_zone.zone_id
+    }
+  }
+
+  allow_overwrite = true
+  name            = each.value.name
+  records         = [each.value.record]
+  ttl             = 60
+  type            = each.value.type
+  zone_id         = each.value.zone_id
 }
 
 # Create an acm certificate request validation
-resource "aws_acm_certificate_validation" "cert" {
-    certificate_arn         = aws_acm_certificate.certificate_request.arn
-    validation_record_fqdns = [aws_route53_record.cert_validation.fqdn]
+resource "aws_acm_certificate_validation" "cert_validation" {
+  certificate_arn         = aws_acm_certificate.cert_request.arn
+  validation_record_fqdns = [for record in aws_route53_record.cert_record : record.fqdn]
 }
 
 # Create an application LoadBalancer
