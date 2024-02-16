@@ -482,7 +482,7 @@ resource "aws_lb" "alb" {
   load_balancer_type = "application"
   security_groups    = [aws_security_group.elb_sg.id]
   subnets            = ["${aws_subnet.public_subnet["public_1"].id}" , "${aws_subnet.public_subnet["public_2"].id}" , "${aws_subnet.public_subnet["public_3"].id}"]
-  enable_deletion_protection = true
+  enable_deletion_protection = false
   tags = {
     name = var.lb_name
   }
