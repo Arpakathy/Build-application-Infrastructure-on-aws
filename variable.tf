@@ -48,15 +48,15 @@ variable "subnet_pub3_cidr" {
 }  
 variable "AZ1" {
   type = string
-  default = "us-east-1a"
+  default = "us-east-2a"
 }
 variable "AZ2" {
   type = string
-  default = "us-east-1b"
+  default = "us-east-2b"
 }
 variable "AZ3" {
   type = string
-  default = "us-east-1c"
+  default = "us-east-2c"
 }
 variable "keypair_name" {
   type = string
