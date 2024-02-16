@@ -82,8 +82,7 @@ resource "aws_subnet" "public_subnet" {
 # Create NAT Gateway and associate with private subnets along with Elastic IP address to provide Internet access
 
 resource "aws_eip" "nat" {
-  vpc = true
-
+  domain   = "vpc"
   tags = {
     Name = "nat"
   }
