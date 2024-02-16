@@ -116,6 +116,7 @@ resource "aws_route_table" "private" {
   tags = {
     Name = each.value.routetab
   }
+
 }
 
 # Creating Public Route table 
@@ -131,6 +132,8 @@ resource "aws_route_table" "public" {
   tags = {
     Name = "public"
   }
+
+  depends_on = [aws_internet_gateway.igw]
 }
 
 # Associate the route table previously created with the subnets
@@ -420,7 +423,6 @@ resource "aws_instance" "app_server2" {
       timeout             = var.health_check["timeout"]
       path                = var.health_check["path"]
       port                = var.health_check["port"]
-      protocol            = var.health_check["protocol"]
    }
    tags = {
     Name = var.tg-name
