@@ -112,7 +112,7 @@ variable "root_volume_size" {
 }
 variable "db_name" {
   type = string
-  default = "utc-dev-database"
+  default = "utcDB"
 }
 variable "db_password" {
   type = string
@@ -124,7 +124,7 @@ variable "db_user" {
 }
 variable "bucket-name" {
   type = string
-  default = "utc-bucket"
+  default = "utc-buckett"
 }
 variable "policy-name" {
   type = string
