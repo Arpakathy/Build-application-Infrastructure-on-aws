@@ -15,6 +15,7 @@ provider "aws" {
 
 
 # Create VPC
+
 resource "aws_vpc" "vpc" {
   cidr_block      = var.VPC_cidr
   tags = {
@@ -696,11 +697,10 @@ resource "aws_autoscaling_group" "asg" {
   max_size             = 10
   min_size             = 2
   vpc_zone_identifier  = ["${aws_subnet.private_subnet["private_1a"].id}", "${aws_subnet.private_subnet["private_1b"].id}","${aws_subnet.private_subnet["private_2a"].id}","${aws_subnet.private_subnet["private_2b"].id}","${aws_subnet.private_subnet["private_3a"].id}","${aws_subnet.private_subnet["private_3b"].id}"]   
-  target_group_arns    = aws_lb_target_group.tg.arn
+  target_group_arns    = ["${aws_lb_target_group.tg.arn}"]
   health_check_type    = "ELB"
   load_balancers = [aws_lb.alb.id]
 
-  # Launch Template
   launch_template {
     id      = aws_launch_template.launch_template.id
     version = aws_launch_template.launch_template.latest_version
@@ -716,7 +716,8 @@ resource "aws_autoscaling_group" "asg" {
 
   metrics_granularity = "1Minute"
 
- # Required to redeploy without an outage.
+ # Required to redeploy without an outage
+
   lifecycle {
     create_before_destroy = true
   }
@@ -729,6 +730,8 @@ resource "aws_autoscaling_group" "asg" {
 
 }
 
+# Create Autoscaling policy for the scale up
+
 resource "aws_autoscaling_policy" "app_policy_up" {
   name = "utc_policy_up"
   scaling_adjustment = 1
@@ -736,6 +739,8 @@ resource "aws_autoscaling_policy" "app_policy_up" {
   cooldown = 300
   autoscaling_group_name = aws_autoscaling_group.asg.name
 }
+
+# Create a cloudwatch metric alarm to be connected with the Autoscaling policy scale up
 
 resource "aws_cloudwatch_metric_alarm" "app_cpu_alarm_up" {
   alarm_name = "utc_cpu_alarm_up"
@@ -754,6 +759,8 @@ resource "aws_cloudwatch_metric_alarm" "app_cpu_alarm_up" {
   alarm_actions = [ aws_autoscaling_policy.app_policy_up.arn ]
 }
 
+#Create Autoscaling policy for the scale down
+
 resource "aws_autoscaling_policy" "app_policy_down" {
   name = "app_policy_down"
   scaling_adjustment = -1
@@ -761,6 +768,8 @@ resource "aws_autoscaling_policy" "app_policy_down" {
   cooldown = 300
   autoscaling_group_name = aws_autoscaling_group.asg.name
 }
+
+# Create a cloudwatch metric alarm to be connected with the Autoscaling policy scale down
 
 resource "aws_cloudwatch_metric_alarm" "app_cpu_alarm_down" {
   alarm_name = "app_cpu_alarm_down"
@@ -793,6 +802,7 @@ resource "aws_sns_topic" "asg_sns_topic" {
 }
 
 ## SNS - Subscription
+
 resource "aws_sns_topic_subscription" "asg_sns_topic_subscription" {
   topic_arn = aws_sns_topic.asg_sns_topic.arn
   protocol  = "email"
