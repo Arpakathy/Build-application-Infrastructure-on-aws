@@ -82,7 +82,7 @@ resource "aws_subnet" "public_subnet" {
 # Create NAT Gateway and associate with private subnets along with Elastic IP address to provide Internet access
 
 resource "aws_eip" "nat" {
-  vpc =  true
+  vpc = true
 
   tags = {
     Name = "nat"
@@ -471,6 +471,21 @@ resource "aws_acm_certificate" "certificate_request" {
   lifecycle {
     create_before_destroy = true
   }
+}
+
+# Create an record for the acm certificate request validation
+resource "aws_route53_record" "cert_validation" {
+    name    = aws_acm_certificate.certificate_request.domain_validation_options[0].resource_record_name
+    type    = aws_acm_certificate.certificate_request.domain_validation_options[0].resource_record_type
+    zone_id = aws_route53_zone.selected.id
+    records = [aws_acm_certificate.certificate_request.domain_validation_options[0].resource_record_value]
+    ttl     = "60"
+}
+
+# Create an acm certificate request validation
+resource "aws_acm_certificate_validation" "cert" {
+    certificate_arn         = aws_acm_certificate.certificate_request.arn
+    validation_record_fqdns = [aws_route53_record.cert_validation.fqdn]
 }
 
 # Create an application LoadBalancer
