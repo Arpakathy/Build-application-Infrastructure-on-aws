@@ -97,7 +97,7 @@ resource "aws_nat_gateway" "nat_gw" {
     Name = each.value.nat_gw
   }
 
-  depends_on = [aws_internet_gateway.igw]
+  depends_on = [aws_internet_gateway.igw, aws_eip.nat]
 
 }
 
@@ -346,8 +346,8 @@ resource "aws_instance" "app_server1" {
   ]
 
   provisioner "file" {
-    source      = "efs_mount.sh"
-    destination = "efs_mount.sh"
+    source      = "./efs_mount.sh"
+    destination = "./efs_mount.sh"
   }
 
   connection {
@@ -456,47 +456,6 @@ resource "aws_route53_zone" "hosted_zone" {
   }
 }
 
-# Create a certificate request
-
-resource "aws_acm_certificate" "cert_request" {
-  domain_name               = var.domain_name
-  subject_alternative_names = ["*.${var.domain_name}"]
-  validation_method         = "DNS"
-  
-  tags = {
-    Name = var.domain_name
-  }
-
-  lifecycle {
-    create_before_destroy = true
-  }
-}
-
-# Create an record for the acm certificate request validation
-
-resource "aws_route53_record" "cert_record" {
-  for_each = {
-    for dvo in aws_acm_certificate.cert_request.domain_validation_options : dvo.domain_name => {
-      name   = dvo.resource_record_name
-      record = dvo.resource_record_value
-      type   = dvo.resource_record_type
-    }
-  }
-
-  name            = each.value.name
-  records         = [each.value.record]
-  ttl             = 60
-  type            = each.value.type
-  zone_id         = aws_route53_zone.hosted_zone.zone_id
-  allow_overwrite = true
-}
-
-# Create an acm certificate request validation
-resource "aws_acm_certificate_validation" "cert_validation" {
-  certificate_arn         = aws_acm_certificate.cert_request.arn
-  validation_record_fqdns = [for record in aws_route53_record.cert_record : record.fqdn]
-}
-
 # Create an application LoadBalancer
 
 resource "aws_lb" "alb" {
@@ -583,7 +542,7 @@ resource "aws_s3_bucket" "bucket" {
 # Creating the IAM Role for S3
 
 resource "aws_iam_role" "iam-role" {
-  name = "example"
+  name = "Ec2AssumeRole"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [

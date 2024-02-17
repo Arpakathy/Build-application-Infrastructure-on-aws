@@ -124,7 +124,7 @@ variable "db_user" {
 }
 variable "bucket-name" {
   type = string
-  default = "utc-buckett"
+  default = "utc-bucket"
 }
 variable "policy-name" {
   type = string
