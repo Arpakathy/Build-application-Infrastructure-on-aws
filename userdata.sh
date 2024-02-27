@@ -20,10 +20,6 @@ unzip awscliv2.zip
 
 sudo    ./aws/install
 
-mkdir   ~/.aws/credentials 
-
-scp -i "ec2-kkey.pem" -r ec2-user@ec2-3-143-113-166.us-east-2.compute.amazonaws.com:~/.aws/credentials ~/.aws/credentials
-
 #write out current crontab
 
 crontab -l > mycron
