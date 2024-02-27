@@ -17,7 +17,8 @@ provider "aws" {
 # Create VPC
 
 resource "aws_vpc" "vpc" {
-  cidr_block      = var.VPC_cidr
+  cidr_block           = var.VPC_cidr
+  enable_dns_hostnames = true
   tags = {
     Name = var.vpc-name
   }
@@ -41,6 +42,7 @@ locals {
     private_2b = {cidr_block = "${var.subnet_priv2b_cidr}" , availability_zone = "${var.AZ2}", routetab = "public_2"},
     private_3a = {cidr_block = "${var.subnet_priv3b_cidr}" , availability_zone = "${var.AZ3}", routetab = "public_3"},
     private_3b = {cidr_block = "${var.subnet_priv3a_cidr}" , availability_zone = "${var.AZ3}", routetab = "public_3"}
+  
   }
 
   public_subnet = {
@@ -81,23 +83,24 @@ resource "aws_subnet" "public_subnet" {
 
 # Create NAT Gateway and associate with private subnets along with Elastic IP address to provide Internet access
 
-resource "aws_eip" "nat" {
-  domain   = "vpc"
+resource "aws_eip" "eip" {
+  for_each  = local.public_subnet
+  domain    = "vpc"
   tags = {
-    Name = "nat"
+    Name = each.key
   }
 }
 
 resource "aws_nat_gateway" "nat_gw" {
   for_each                = local.public_subnet
-  allocation_id           = aws_eip.nat.id
+  allocation_id           = aws_eip.eip[each.key].id
   subnet_id               = aws_subnet.public_subnet[each.key].id
 
   tags = {
     Name = each.value.nat_gw
   }
 
-  depends_on = [aws_internet_gateway.igw, aws_eip.nat]
+  depends_on = [aws_internet_gateway.igw]
 
 }
 
@@ -270,7 +273,6 @@ resource "aws_security_group" "db_sg" {
 # Create Security Group for the efs  
 
 resource "aws_security_group" "efs_sg" {
-  name        = "allow_from_public_instances"
   vpc_id      = aws_vpc.vpc.id
 
   ingress {
@@ -317,16 +319,98 @@ resource "local_file" "ssh_key" {
 # Create an ec2 instance for the Bastion Host
 
 resource "aws_instance" "bastion" {
+  for_each               = local.public_subnet
   ami                    = var.aws_ami
   instance_type          = var.instance_type
-  subnet_id              = aws_subnet.private_subnet["private_1a"].id
+  subnet_id              = aws_subnet.public_subnet[each.key].id
   vpc_security_group_ids = ["${aws_security_group.bastion_sg.id}"]
   key_name               = aws_key_pair.app_key.key_name
+    
+  connection {
+    type        = "ssh"
+    host        = self.public_ip
+    user        = "ec2-user"
+    private_key = file(var.keypair_location) # Location of the Private Key
+    timeout     = "4m"
+  }
+
+  provisioner "file" {
+    source      = "${var.keypair_location}"
+    destination = "${var.keypair_location}"
+  
+  }  
+
+  provisioner "file" {
+    source      = "~/.aws/credentials"
+    destination = "~/.aws/credentials"
+  }
+  
+  provisioner "file" {
+    source      = "efs_mount.sh"
+    destination = "efs_mount.sh"
+  }
+
   tags = {
-    Name = "bastion-host"
+    Name = each.key
   }
 
  }
+ 
+ # Create EFS File system 
+
+resource "aws_efs_file_system" "efs" {
+  creation_token   = "efs"
+  performance_mode = "generalPurpose"
+  throughput_mode  = "bursting"
+  lifecycle_policy {
+    transition_to_ia = "AFTER_30_DAYS"
+  }
+  tags = {
+    Name = "utc-efs"
+  }
+}
+
+# Create EFS mount target in AZ1
+
+resource "aws_efs_mount_target" "mount_tg1" {
+  subnet_id       = aws_subnet.private_subnet["private_1a"].id
+  file_system_id  = aws_efs_file_system.efs.id
+  security_groups = [aws_security_group.efs_sg.id]
+}
+
+# Create EFS mount target in AZ2
+
+resource "aws_efs_mount_target" "mount_tg2" {
+  subnet_id       = aws_subnet.private_subnet["private_2a"].id
+  file_system_id  = aws_efs_file_system.efs.id
+  security_groups = [aws_security_group.efs_sg.id]
+}
+
+# Generating Script for Mounting EFS
+
+resource "null_resource" "generate_efs_mount_script" {
+
+  provisioner "local-exec" {
+    command = templatefile("efs_mount.tpl", {
+      efs_mount_point = var.efs_mount_point
+      file_system_id  = aws_efs_file_system.efs.id
+    })
+    interpreter = [
+      "bash",
+      "-c"
+    ]
+  }
+}
+
+# Clean Up Existing Script 
+
+resource "null_resource" "clean_up" {
+
+  provisioner "local-exec" {
+    when    = destroy
+    command = "rm -rf efs_mount.sh"
+  }
+}
 
 # Create an ec2 instance for the app server in AZ private 1
 
@@ -340,24 +424,31 @@ resource "aws_instance" "app_server1" {
   tags = {
     Name = "app-server-AZ1"
   }
-  depends_on = [
-    null_resource.generate_efs_mount_script,
-    aws_efs_mount_target.mount_tg
+  depends_on = [ 
+    null_resource.generate_efs_mount_script, aws_instance.bastion["public_1"], aws_efs_mount_target.mount_tg1 , aws_s3_bucket.bucket
   ]
-
-  provisioner "file" {
-    source      = "./efs_mount.sh"
-    destination = "./efs_mount.sh"
-  }
 
   connection {
     type        = "ssh"
-    host        = self.public_ip
+    host        = self.private_ip
     user        = "ec2-user"
     private_key = file(var.keypair_location) # Location of the Private Key
     timeout     = "4m"
+    bastion_user = "ec2-user"
+    bastion_host = aws_instance.bastion["public_1"].public_ip
+    bastion_host_key = file(var.keypair_location)
   }
 
+  provisioner "file" {
+    source      = "~/.aws/credentials"
+    destination = "~/.aws/credentials"
+  }
+
+  provisioner "file" {
+    source      = "efs_mount.sh"
+    destination = "efs_mount.sh"
+  }
+  
   provisioner "remote-exec" {
     inline = [
       "bash efs_mount.sh",
@@ -376,36 +467,87 @@ resource "aws_instance" "app_server2" {
   user_data              = "${file("userdata.sh")}"
   key_name               = aws_key_pair.app_key.key_name
   tags = {
-    Name = "app-server-AZ2"
+    Name = "app-server-AZ1"
   }
-
-  depends_on = [
-    null_resource.generate_efs_mount_script,
-    aws_efs_mount_target.mount_tg
+  depends_on = [ 
+    null_resource.generate_efs_mount_script, aws_instance.bastion["public_2"], aws_efs_mount_target.mount_tg1 , aws_s3_bucket.bucket
   ]
+
+  connection {
+    type        = "ssh"
+    host        = self.private_ip
+    user        = "ec2-user"
+    private_key = file(var.keypair_location) # Location of the Private Key
+    timeout     = "4m"
+    bastion_user = "ec2-user"
+    bastion_host = aws_instance.bastion["public_2"].public_ip
+    bastion_host_key = file(var.keypair_location)
+  }
+  
+  provisioner "file" {
+    source      = "~/.aws/credentials"
+    destination = "~/.aws/credentials"
+  }
 
   provisioner "file" {
     source      = "efs_mount.sh"
     destination = "efs_mount.sh"
   }
-
-  connection {
-    type        = "ssh"
-    host        = self.public_ip
-    user        = "ec2-user"
-    private_key = file(var.keypair_location) # Location of the Private Key
-    timeout     = "4m"
-  }
-
+  
   provisioner "remote-exec" {
     inline = [
       "bash efs_mount.sh",
     ]
   }
 
- } 
+ }
 
-# Create a target Group
+# Create an ec2 instance for the app server in AZ private 3
+
+resource "aws_instance" "app_server3" {
+  ami                    = var.aws_ami
+  instance_type          = var.instance_type
+  subnet_id              = aws_subnet.private_subnet["private_3a"].id
+  vpc_security_group_ids = ["${aws_security_group.app_server_sg.id}"]
+  user_data              = "${file("userdata.sh")}"
+  key_name               = aws_key_pair.app_key.key_name
+  tags = {
+    Name = "app-server-AZ1"
+  }
+  depends_on = [ 
+    null_resource.generate_efs_mount_script, aws_instance.bastion["public_3"], aws_efs_mount_target.mount_tg1 , aws_s3_bucket.bucket
+  ]
+
+  connection {
+    type        = "ssh"
+    host        = self.private_ip
+    user        = "ec2-user"
+    private_key = file(var.keypair_location) # Location of the Private Key
+    timeout     = "4m"
+    bastion_user = "ec2-user"
+    bastion_host = aws_instance.bastion["public_3"].public_ip
+    bastion_host_key = file(var.keypair_location)
+  }
+  
+  provisioner "file" {
+    source      = "~/.aws/credentials"
+    destination = "~/.aws/credentials"
+  }
+
+  provisioner "file" {
+    source      = "efs_mount.sh"
+    destination = "efs_mount.sh"
+  }
+  
+  provisioner "remote-exec" {
+    inline = [
+      "bash efs_mount.sh",
+    ]
+  }
+
+ }
+
+ # Create a target Group
 
  resource "aws_lb_target_group" "tg" {
 
@@ -442,6 +584,12 @@ resource "aws_lb_target_group_attachment" "tg-atch-serv2" {
   port             = 80
 }
 
+resource "aws_lb_target_group_attachment" "tg-atch-serv3" {
+  target_group_arn = aws_lb_target_group.tg.arn
+  target_id        = aws_instance.app_server3.id 
+  port             = 80
+}
+
 # Create an Hosted Zone in Amazon Route 53
 
 resource "aws_route53_zone" "hosted_zone" {
@@ -464,7 +612,7 @@ resource "aws_lb" "alb" {
   internal           = false
   load_balancer_type = "application"
   security_groups    = [aws_security_group.elb_sg.id]
-  subnets            = ["${aws_subnet.public_subnet["public_1"].id}" , "${aws_subnet.public_subnet["public_2"].id}" , "${aws_subnet.public_subnet["public_3"].id}"]
+  subnets            = ["${aws_subnet.public_subnet["public_1"].id}" , "${aws_subnet.public_subnet["public_2"].id}", "${aws_subnet.public_subnet["public_3"].id}"]
   enable_deletion_protection = false
   tags = {
     name = var.lb_name
@@ -484,18 +632,10 @@ resource "aws_lb_listener" "lb_listener_http" {
   }
 }
 
-# Attach the target group to the ALB
-
-resource "aws_lb_target_group_attachment" "tg-atch-alb" {
-    target_group_arn = aws_lb_target_group.tg.arn
-    target_id        = aws_lb.alb.id
-    port             = 80
-}
-
 # Create an RDS Subnet group
 
 resource "aws_db_subnet_group" "rds_subnet_grp" {
-    subnet_ids = ["${aws_subnet.private_subnet["private_1a"].id}", "${aws_subnet.private_subnet["private_1b"].id}","${aws_subnet.private_subnet["private_2a"].id}","${aws_subnet.private_subnet["private_2b"].id}","${aws_subnet.private_subnet["private_3a"].id}","${aws_subnet.private_subnet["private_3b"].id}"]    
+    subnet_ids = ["${aws_subnet.private_subnet["private_1a"].id}", "${aws_subnet.private_subnet["private_1b"].id}","${aws_subnet.private_subnet["private_2a"].id}","${aws_subnet.private_subnet["private_2b"].id}", "${aws_subnet.private_subnet["private_3a"].id}","${aws_subnet.private_subnet["private_3b"].id}"] 
 }
   
 # Create RDS instance
@@ -512,7 +652,7 @@ resource "aws_db_instance" "db" {
   password               = var.db_password
   skip_final_snapshot    = true
 
- # make sure rds manual password changes is ignored
+ # Make sure rds manual password changes is ignored
 
   lifecycle {
      ignore_changes = [password]
@@ -520,7 +660,7 @@ resource "aws_db_instance" "db" {
 
 }
 
-# change USERDATA varible value after grabbing RDS endpoint info
+# Change USERDATA varible value after grabbing RDS endpoint info
 
 data "template_file" "user_data" {
   template = file("${path.module}/userdata.tpl")
@@ -585,55 +725,6 @@ resource "aws_iam_role_policy_attachment" "policy-atch" {
   policy_arn = aws_iam_policy.iam-policy.arn
 }
 
-# Create EFS File system 
-
-resource "aws_efs_file_system" "efs" {
-  creation_token   = "efs"
-  performance_mode = "generalPurpose"
-  throughput_mode  = "bursting"
-  lifecycle_policy {
-    transition_to_ia = "AFTER_30_DAYS"
-  }
-  tags = {
-    Name = "utc-efs"
-  }
-}
-
-# Create EFS mount targets 
-
-resource "aws_efs_mount_target" "mount_tg" {
-  for_each        = local.public_subnet
-  subnet_id       = aws_subnet.public_subnet[each.key].id
-  file_system_id  = aws_efs_file_system.efs.id
-  security_groups = [aws_security_group.efs_sg.id]
-}
-
-# Generating Script for Mounting EFS
-
-resource "null_resource" "generate_efs_mount_script" {
-
-  provisioner "local-exec" {
-    command = templatefile("efs_mount.tpl", {
-      efs_mount_point = var.efs_mount_point
-      file_system_id  = aws_efs_file_system.efs.id
-    })
-    interpreter = [
-      "bash",
-      "-c"
-    ]
-  }
-}
-
-# Clean Up Existing Script 
-
-resource "null_resource" "clean_up" {
-
-  provisioner "local-exec" {
-    when    = destroy
-    command = "rm -rf efs_mount.sh"
-  }
-}
-
 # Create an ami for the instances
 
 resource "aws_ami_from_instance" "app-ami" {
@@ -644,75 +735,24 @@ resource "aws_ami_from_instance" "app-ami" {
 # Create a lunch template for our auto scaling
 
 resource "aws_launch_template" "launch_template" {
-  name = var.launch-tpl
-  description = "utc Launch Template"
-  image_id = aws_ami_from_instance.app-ami.id
+  name_prefix   = var.launch-tpl
+  image_id      = aws_ami_from_instance.app-ami.id
   instance_type = var.instance_type
-
-  vpc_security_group_ids = [aws_security_group.app_server_sg.id]
-  key_name = var.keypair_name  
-  ebs_optimized = true
-  #default_version = 1
-  update_default_version = true
-  block_device_mappings {
-    device_name = "/dev/sdf"
-    ebs {
-      volume_size = 20 # LT Update Testing - Version 2 of LT      
-      delete_on_termination = true
-      volume_type = "gp2" # default is gp2
-     }
-  }
-  monitoring {
-    enabled = true
-  }
-
-  tag_specifications {
-    resource_type = "instance"
-    tags = {
-      Name = "myasg"
-    }
-  }
 }
 
 # Autoscaling Group Resource
 
 resource "aws_autoscaling_group" "asg" {
-  name_prefix = var.asg-name
-  desired_capacity     = 2
-  max_size             = 10
-  min_size             = 2
-  vpc_zone_identifier  = ["${aws_subnet.private_subnet["private_1a"].id}", "${aws_subnet.private_subnet["private_1b"].id}","${aws_subnet.private_subnet["private_2a"].id}","${aws_subnet.private_subnet["private_2b"].id}","${aws_subnet.private_subnet["private_3a"].id}","${aws_subnet.private_subnet["private_3b"].id}"]   
-  target_group_arns    = ["${aws_lb_target_group.tg.arn}"]
-  health_check_type    = "ELB"
-  load_balancers = [aws_lb.alb.id]
+  availability_zones = ["${var.AZ1}","${var.AZ2}","${var.AZ3}"]
+  desired_capacity   = 2
+  max_size           = 10
+  min_size           = 2
 
   launch_template {
     id      = aws_launch_template.launch_template.id
-    version = aws_launch_template.launch_template.latest_version
+    version = "$Latest"
+
   }
-
-  enabled_metrics = [
-    "GroupMinSize",
-    "GroupMaxSize",
-    "GroupDesiredCapacity",
-    "GroupInServiceInstances",
-    "GroupTotalInstances"
-  ]
-
-  metrics_granularity = "1Minute"
-
- # Required to redeploy without an outage
-
-  lifecycle {
-    create_before_destroy = true
-  }
-
-  tag {
-    key                 = "Name"
-    value               = "web"
-    propagate_at_launch = true
-  }
-
 }
 
 # Create Autoscaling policy for the scale up
@@ -806,8 +846,3 @@ resource "aws_autoscaling_notification" "asg_notifications" {
   ]
   topic_arn = aws_sns_topic.asg_sns_topic.arn 
 }
-
-
-
-
-
